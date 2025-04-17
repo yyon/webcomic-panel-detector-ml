@@ -43,7 +43,7 @@ class SlidingWindowVerticalRegionDataset(Dataset):
 
         self.images = []
         self.images_samples = []
-        image_files = sorted([file for file in os.listdir(self.directory) if file.endswith(".png")])[:8]
+        image_files = sorted([file for file in os.listdir(self.directory) if file.endswith(".png")])
         for img_i, img_name in enumerate(image_files):
             img_path = os.path.join(self.directory, img_name)
             image = SlidingWindowImage(img_path, window_height, stride, target_width)
