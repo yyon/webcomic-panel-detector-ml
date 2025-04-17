@@ -66,8 +66,10 @@ def train(model, dataset, device, num_epochs=10):
     optimizer = optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
 
     for epoch in range(num_epochs):
-        for images, targets in data_loader:
-            print("train", [img.shape for img in images], targets)
+        data_loader_len = len(data_loader)
+        for data_loader_i, data in enumerate(data_loader):
+            images, targets = data
+            print("train", int((data_loader_i + epoch * data_loader_len) / (data_loader_len * num_epochs) * 100), "(", int(data_loader_i / data_loader_len * 100), ")")
             images = list(img.to(device) for img in images)
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 

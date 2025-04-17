@@ -133,7 +133,7 @@ class SlidingWindowImage():
 
         # Crop vertically
         crop = self.vertical_crop_with_white_fill(image, sample["top"], sample["bottom"])
-        print(img_path, sample["top"], sample["bottom"])
+        # print(img_path, sample["top"], sample["bottom"])
 
         # Albumentations expects HWC numpy arrays
         crop_np = crop.permute(1, 2, 0).numpy()
