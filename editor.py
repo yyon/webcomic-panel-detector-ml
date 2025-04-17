@@ -315,11 +315,11 @@ class ImageViewer(Gtk.Application):
                 loaded_regions = json.loads(json_text)
                 self.regions = [{'y1': region[0], 'y2': region[0] + region[1]} for region in loaded_regions]
         
-            if len(self.regions) > 0 and (self.regions[0]['y1'] < self.image_content_start or self.regions[-1]['y2'] > self.image_content_end):
-                self.regions[0]['y1'] = max(self.regions[0]['y1'], self.image_content_start)
-                self.regions[-1]['y2'] = min(self.regions[-1]['y2'], self.image_content_end)
-                print("EDITED")
-                self.save_regions()
+            # if len(self.regions) > 0 and (self.regions[0]['y1'] < self.image_content_start or self.regions[-1]['y2'] > self.image_content_end):
+            #     self.regions[0]['y1'] = max(self.regions[0]['y1'], self.image_content_start)
+            #     self.regions[-1]['y2'] = min(self.regions[-1]['y2'], self.image_content_end)
+            #     print("EDITED")
+            #     self.save_regions()
 
         return True
 
@@ -404,6 +404,19 @@ class ImageViewer(Gtk.Application):
         self.pixbuf = GdkPixbuf.Pixbuf.new_from_file(path)
         self.image_np = array_from_pixbuf(self.pixbuf)
         self.image_content_start, self.image_content_end = find_panels_np(self.image_np)
+    
+    def get_regions_with_layers(self, regions):
+        regions_with_layers = []
+        for region in sorted(regions, key = lambda region : region["y1"]):
+            layer = 0
+            while len([True for other_region in regions_with_layers if other_region["layer"] == layer and other_region["y2"] > region["y1"] and region["y2"] > other_region["y1"]]) > 0:
+                layer += 1
+            regions_with_layers.append({
+                "y1": region["y1"],
+                "y2": region["y2"],
+                "layer": layer
+            })
+        return regions_with_layers
 
     def on_draw(self, area, ctx, width, height):
         if not hasattr(self, "pixbuf"):
@@ -416,6 +429,8 @@ class ImageViewer(Gtk.Application):
         Gdk.cairo_set_source_pixbuf(ctx, self.pixbuf, 0, 0)
         ctx.paint()
 
+        ctx.restore()
+
         image_width = self.pixbuf.get_width()
         image_height = self.pixbuf.get_height()
 
@@ -426,24 +441,8 @@ class ImageViewer(Gtk.Application):
             temp_region = {'y1': y1, 'y2': y2}
             all_regions.append(temp_region)
             all_regions.sort(key=lambda x : x['y1'])
-
-        for i, region in enumerate(all_regions):
-            ctx.set_source_rgba(0,0,0,1)
-            ctx.set_line_width(4.0 / self.scale)
-            ctx.move_to(0, region['y1'])
-            ctx.line_to(image_width, region['y1'])
-            ctx.stroke()
-            ctx.move_to(0, region['y2'])
-            ctx.line_to(image_width, region['y2'])
-            ctx.stroke()
-            ctx.set_source_rgba(*COLORS[i % len(COLORS)], 0.5 if region==temp_region else 1)
-            ctx.set_line_width(2.0 / self.scale)
-            ctx.move_to(0, region['y1'])
-            ctx.line_to(image_width, region['y1'])
-            ctx.stroke()
-            ctx.move_to(0, region['y2'])
-            ctx.line_to(image_width, region['y2'])
-            ctx.stroke()
+        
+        regions_with_layers = self.get_regions_with_layers(all_regions)
 
         # for y in [self.image_content_start, self.image_content_end]:
         #     ctx.set_source_rgba(0,1,1,1)
@@ -452,10 +451,9 @@ class ImageViewer(Gtk.Application):
         #     ctx.line_to(image_width, y)
         #     ctx.stroke()
 
-        ctx.restore()
 
-        for i, region in enumerate(all_regions):
-            col = i % COLUMNS
+        for i, region in enumerate(regions_with_layers):
+            col = region["layer"]
             x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
             y1 = region['y1'] * self.scale + self.offset_y
             y2 = region['y2'] * self.scale + self.offset_y
@@ -464,6 +462,27 @@ class ImageViewer(Gtk.Application):
             ctx.set_source_rgba(*COLORS[i % len(COLORS)], 0.5 if region==temp_region else 1)
             ctx.rectangle(x, min(y1, y2), BOX_WIDTH, h)
             ctx.fill()
+
+
+        for i, region in enumerate(regions_with_layers):
+            col = region["layer"]
+            right = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
+            ctx.set_source_rgba(0,0,0,1)
+            ctx.set_line_width(4.0)
+            ctx.move_to(self.offset_x, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(right, region['y1'] * self.scale + self.offset_y)
+            ctx.stroke()
+            ctx.move_to(self.offset_x, region['y2'] * self.scale + self.offset_y)
+            ctx.line_to(right, region['y2'] * self.scale + self.offset_y)
+            ctx.stroke()
+            ctx.set_source_rgba(*COLORS[i % len(COLORS)], 0.5 if region==temp_region else 1)
+            ctx.set_line_width(2.0)
+            ctx.move_to(self.offset_x, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(right, region['y1'] * self.scale + self.offset_y)
+            ctx.stroke()
+            ctx.move_to(self.offset_x, region['y2'] * self.scale + self.offset_y)
+            ctx.line_to(right, region['y2'] * self.scale + self.offset_y)
+            ctx.stroke()
 
         # ctx.set_source_rgba(1, 1, 1, 1)
         # ctx.rectangle(self.offset_x - BOX_WIDTH - PADDING, self.image_content_start * self.scale + self.offset_y, BOX_WIDTH/2, self.image_content_end * self.scale - self.image_content_start * self.scale)
@@ -528,11 +547,12 @@ class ImageViewer(Gtk.Application):
         mouse_y = min(max(mouse_y, self.image_content_start), self.image_content_end)
         self.current_region_start = mouse_y
         image_width = self.pixbuf.get_width()
+        regions_with_layers = self.get_regions_with_layers(self.regions)
         for i, region in enumerate(self.regions):
             grabbed_top = abs(mouse_y-region["y1"]) < 10
             grabbed_bottom = abs(mouse_y-region["y2"]) < 10
             if grabbed_top or grabbed_bottom:
-                col = i % COLUMNS
+                col = region["layer"]
                 box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
                 if x >= box_x and x < box_x + BOX_WIDTH:
                     self.regions.remove(region)
