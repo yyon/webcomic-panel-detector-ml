@@ -1,0 +1,6 @@
+venv
+train
+test_full
+test_windows
+model
+__pycache__

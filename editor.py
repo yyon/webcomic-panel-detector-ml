@@ -3,11 +3,19 @@ import random
 import cairo
 import os
 import json
+import numpy as np
 
 from gi.repository import GLib
 
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, Gio
+
+import argparse
+
+parser = argparse.ArgumentParser(prog='editor.py')
+parser.add_argument('images_dir')
+args = parser.parse_args()
+images_dir = args.images_dir
 
 COLORS = [ \
     (1, 0, 0),
@@ -22,13 +30,126 @@ BOX_WIDTH = 30
 PADDING = 2
 COLUMNS = 5
 
+
+def chunk_pixbuf(pixbuf, chunk_height):
+    """Chunk a long vertical GdkPixbuf.Pixbuf into multiple GdkPixbuf.Pixbuf"""
+
+    width = pixbuf.get_width()
+    full_height = pixbuf.get_height()
+
+    chunks = []
+    for index in range(math.ceil(full_height / chunk_height)):
+        y = index * chunk_height
+        height = chunk_height if y + chunk_height <= full_height else full_height - y
+
+        chunk = Pixbuf.new(Colorspace.RGB, pixbuf.get_has_alpha(), 8, width, height)
+        pixbuf.copy_area(0, y, width, height, chunk, 0, 0)
+        chunks.append(chunk)
+
+    return chunks
+
+def array_from_pixbuf(p):
+    " convert from GdkPixbuf to numpy array"
+    w,h,c,r=(p.get_width(), p.get_height(), p.get_n_channels(), p.get_rowstride())
+    assert p.get_colorspace() == GdkPixbuf.Colorspace.RGB
+    assert p.get_bits_per_sample() == 8
+    if  p.get_has_alpha():
+        assert c == 4
+    else:
+        assert c == 3
+    assert r >= w * c
+    a=np.frombuffer(p.get_pixels(),dtype=np.uint8)
+    if a.shape[0] == w*c*h:
+        return a.reshape( (h, w, c) )
+    else:
+        b=np.zeros((h,w*c),'uint8')
+        for j in range(h):
+            b[j,:]=a[r*j:r*j+w*c]
+        return b.reshape( (h, w, c) )
+
+def to_signed(image_np):
+    if np.issubdtype(image_np.dtype, np.unsignedinteger):
+        unsigned_bits = image_np.dtype.itemsize * 8
+        # Upcast to next larger signed integer type
+        if unsigned_bits == 8:
+            image_np = image_np.astype(np.int16)
+        elif unsigned_bits == 16:
+            image_np = image_np.astype(np.int32)
+        elif unsigned_bits == 32:
+            image_np = image_np.astype(np.int64)
+        elif unsigned_bits == 64:
+            raise ValueError("image is uint64")
+    return image_np
+
+def find_panels_np(image_np):
+    image_np = to_signed(image_np)
+
+    white_tolerance = 120
+    diff_tolerance = 20
+    grey_tolerance = 20
+    min_whitespace = int(len(image_np[0]) / 160)
+    min_panel = int(len(image_np[0]) / 10)
+    max_gap = int(len(image_np[0]) / 40)
+    panel_is_line = int(len(image_np[0]) / 100)
+
+    image_np = image_np[:, 1:-1, 0:3]
+
+    # find greyscale
+    is_greyscale = np.all(np.abs(np.diff(image_np, axis=2)) < grey_tolerance, axis=(1,2))
+
+    # find_white
+    minus_white = np.array([[[255,255,255]]]) - image_np
+    is_white = np.all(np.abs(minus_white) < white_tolerance, axis=(1, 2))
+
+    # difference from average
+    minus_first = image_np - np.average(image_np, axis=1).reshape([image_np.shape[0], 1, image_np.shape[2]])
+    is_space_count = np.count_nonzero(np.all(np.abs(minus_first) < diff_tolerance, axis=(2)), axis=1)
+    is_space = is_space_count > image_np.shape[1] * .95
+
+    # print("grey", is_greyscale[:10])
+    # print("white", is_white[:10])
+    # print("space", is_space[:10], is_space_count[:10])
+
+    is_whitespace = np.logical_and(np.logical_and(is_greyscale, is_white), is_space)
+
+    # to [start, length]
+    padded = np.pad(is_whitespace, (1, 1), constant_values=False)
+    changes = np.diff(padded.astype(int))
+    starts = np.flatnonzero(changes == 1)
+    ends = np.flatnonzero(changes == -1)
+    lengths = ends - starts
+    whitespaces_np = np.column_stack((starts, lengths))
+    whitespaces = whitespaces_np.tolist()
+
+    start = 0
+    if len(whitespaces) > 0 and whitespaces[0][0] == 0:
+        start = whitespaces[0][1]
+    
+    end = image_np.shape[0]
+    if len(whitespaces) > 0 and whitespaces[-1][0] + whitespaces[-1][1] >= end:
+        end = whitespaces[-1][0]
+
+    # print("whitespace", whitespaces)
+    
+    return [start, end]
+
+class ConfirmDialog(Gtk.MessageDialog):
+    def __init__(self, parent):
+        super().__init__(
+            transient_for=parent,
+            modal=True,
+            buttons=Gtk.ButtonsType.YES_NO,
+            message_type=Gtk.MessageType.QUESTION,
+            text="Are you sure?",
+        )
+
 class ImageViewer(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="org.example.ImageViewer")
         self.connect("activate", self.on_activate)
 
         # Hard-coded folder path
-        self.image_folder = "/home/yyon/Pictures/long_panels/unsolved"
+        self.image_folder = images_dir
         self.image_files = []
         self.current_image_index = -1
         
@@ -80,7 +201,12 @@ class ImageViewer(Gtk.Application):
         spacer.set_hexpand(True)
         self.toolbar.append(spacer)
 
-        # clear
+        # single
+        self.delete_button = Gtk.Button(label="Delete file")
+        self.delete_button.connect("clicked", self.on_delete_clicked)
+        self.toolbar.append(self.delete_button)
+
+        # single
         self.next_button = Gtk.Button(label="Set Single Regions")
         self.next_button.connect("clicked", self.on_single_region_clicked)
         self.toolbar.append(self.next_button)
@@ -136,6 +262,10 @@ class ImageViewer(Gtk.Application):
         scroll_controller.connect("scroll", self.on_scroll)
         self.drawing_area.add_controller(scroll_controller)
 
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect("key-pressed", self.on_key_press)
+        self.window.add_controller(key_controller)
+
     def load_image_files(self):
         try:
             self.image_files = [
@@ -149,7 +279,12 @@ class ImageViewer(Gtk.Application):
             self.image_files = []
 
     def load_first_image(self):
-        self.load_image_index(0)
+        index = 0
+        for i, image_file in enumerate(self.image_files):
+            if not os.path.exists(self.get_json(image_file)):
+                index = i
+                break
+        self.load_image_index(index)
         return False
 
     def load_image_index(self, index):
@@ -173,12 +308,18 @@ class ImageViewer(Gtk.Application):
         self.init_scale()
 
         # load regions from json
-        json_file = image_file.rsplit(".", 1)[0] + ".json"
+        json_file = self.get_json(image_file)
         if os.path.exists(json_file):
             with open(json_file, "r") as f:
                 json_text = f.read()
                 loaded_regions = json.loads(json_text)
                 self.regions = [{'y1': region[0], 'y2': region[0] + region[1]} for region in loaded_regions]
+        
+            if len(self.regions) > 0 and (self.regions[0]['y1'] < self.image_content_start or self.regions[-1]['y2'] > self.image_content_end):
+                self.regions[0]['y1'] = max(self.regions[0]['y1'], self.image_content_start)
+                self.regions[-1]['y2'] = min(self.regions[-1]['y2'], self.image_content_end)
+                print("EDITED")
+                self.save_regions()
 
         return True
 
@@ -201,7 +342,7 @@ class ImageViewer(Gtk.Application):
 
     def on_single_region_clicked(self, button):
         img_height = self.pixbuf.get_height()
-        self.regions = [{'y1': 0, 'y2': img_height}]
+        self.regions = [{'y1': self.image_content_start, 'y2': self.image_content_end}] # [{'y1': 0, 'y2': img_height}]
         self.current_region_start = None
         self.current_region_temp = None
         self.save_regions()
@@ -209,6 +350,36 @@ class ImageViewer(Gtk.Application):
 
     def on_clear_regions_clicked(self, button):
         self.regions = []
+        self.current_region_start = None
+        self.current_region_temp = None
+        self.save_regions()
+        self.drawing_area.queue_draw()
+    
+    def on_delete_clicked(self, button):
+        dialog = ConfirmDialog(self.window)
+        dialog.show()
+        dialog.connect("response", self.on_delete_response)
+
+    def on_delete_response(self, dialog, response):
+        if response == Gtk.ResponseType.YES:
+            print("User confirmed!")
+            image_file = self.image_files[self.current_image_index]
+            os.remove(image_file)
+            self.image_files.remove(image_file)
+            self.load_image_index(self.current_image_index)
+        else:
+            print("User cancelled.")
+        dialog.destroy()
+    
+
+    def on_key_press(self, controller, keyval, keycode, state):
+        # Check if the Escape key was pressed
+        if keyval == Gdk.KEY_Escape:
+            self.on_escape_pressed()
+            return True  # Event has been handled
+        return False  # Event not handled
+
+    def on_escape_pressed(self):
         self.current_region_start = None
         self.current_region_temp = None
         self.drawing_area.queue_draw()
@@ -231,6 +402,8 @@ class ImageViewer(Gtk.Application):
 
     def load_image(self, path):
         self.pixbuf = GdkPixbuf.Pixbuf.new_from_file(path)
+        self.image_np = array_from_pixbuf(self.pixbuf)
+        self.image_content_start, self.image_content_end = find_panels_np(self.image_np)
 
     def on_draw(self, area, ctx, width, height):
         if not hasattr(self, "pixbuf"):
@@ -272,6 +445,13 @@ class ImageViewer(Gtk.Application):
             ctx.line_to(image_width, region['y2'])
             ctx.stroke()
 
+        # for y in [self.image_content_start, self.image_content_end]:
+        #     ctx.set_source_rgba(0,1,1,1)
+        #     ctx.set_line_width(2.0 / self.scale)
+        #     ctx.move_to(0, y)
+        #     ctx.line_to(image_width, y)
+        #     ctx.stroke()
+
         ctx.restore()
 
         for i, region in enumerate(all_regions):
@@ -284,6 +464,10 @@ class ImageViewer(Gtk.Application):
             ctx.set_source_rgba(*COLORS[i % len(COLORS)], 0.5 if region==temp_region else 1)
             ctx.rectangle(x, min(y1, y2), BOX_WIDTH, h)
             ctx.fill()
+
+        # ctx.set_source_rgba(1, 1, 1, 1)
+        # ctx.rectangle(self.offset_x - BOX_WIDTH - PADDING, self.image_content_start * self.scale + self.offset_y, BOX_WIDTH/2, self.image_content_end * self.scale - self.image_content_start * self.scale)
+        # ctx.fill()
 
     def on_zoom(self, gesture, scale):
         center_x = self.drawing_area.get_allocated_width() / 2
@@ -341,7 +525,7 @@ class ImageViewer(Gtk.Application):
             return
         
         img_height = self.pixbuf.get_height()
-        mouse_y = min(max(mouse_y, 0), img_height)
+        mouse_y = min(max(mouse_y, self.image_content_start), self.image_content_end)
         self.current_region_start = mouse_y
         image_width = self.pixbuf.get_width()
         for i, region in enumerate(self.regions):
@@ -365,7 +549,7 @@ class ImageViewer(Gtk.Application):
         if self.current_region_start is not None:
             y_current = (y - self.offset_y) / self.scale
             img_height = self.pixbuf.get_height()
-            y_current = min(max(y_current, 0), img_height)
+            y_current = min(max(y_current, self.image_content_start), self.image_content_end)
             self.current_region_temp = (self.current_region_start, y_current)
             self.drawing_area.queue_draw()
 
@@ -373,15 +557,15 @@ class ImageViewer(Gtk.Application):
         if self.current_region_start != None:
             mouse_y = (y - self.offset_y) / self.scale
             img_height = self.pixbuf.get_height()
-            y1 = min(max(min(self.current_region_start, mouse_y), 0), img_height)
-            y2 = min(max(max(self.current_region_start, mouse_y), 0), img_height)
+            y1 = min(max(min(self.current_region_start, mouse_y), self.image_content_start), self.image_content_end)
+            y2 = min(max(max(self.current_region_start, mouse_y), self.image_content_start), self.image_content_end)
             if abs(y1-y2) > 5:
                 self.finish_region(mouse_y)
 
     def finish_region(self, y_end):
         img_height = self.pixbuf.get_height()
-        y1 = min(max(min(self.current_region_start, y_end), 0), img_height)
-        y2 = min(max(max(self.current_region_start, y_end), 0), img_height)
+        y1 = min(max(min(self.current_region_start, y_end), self.image_content_start), self.image_content_end)
+        y2 = min(max(max(self.current_region_start, y_end), self.image_content_start), self.image_content_end)
 
         if abs(y1-y2) < 5:
             y1 = 0
@@ -396,11 +580,19 @@ class ImageViewer(Gtk.Application):
         self.current_region_temp = None
         self.drawing_area.queue_draw()
     
+    def get_json(self, image_file):
+        return image_file.rsplit(".", 1)[0] + ".json"
+    
     def save_regions(self):
+        image_file = self.image_files[self.current_image_index]
+        json_file = self.get_json(image_file)
+        if len(self.regions) == 0:
+            if os.path.exists(json_file):
+                os.remove(json_file)
+            return
+
         regions_arr = [[region['y1'], region['y2'] - region['y1']] for region in self.regions]
 
-        image_file = self.image_files[self.current_image_index]
-        json_file = image_file.rsplit(".", 1)[0] + ".json"
         with open(json_file, "w") as f:
             json_text = f.write(json.dumps(regions_arr))
 
