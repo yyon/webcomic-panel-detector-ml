@@ -169,6 +169,9 @@ class ImageViewer(Gtk.Application):
 
         self.last_pointer_position = None
 
+        self.region_delete_buttons = []
+        self.hovered_delete_button = None
+
     def on_activate(self, app):
         self.window = Gtk.ApplicationWindow(application=app)
         self.window.set_title("Image Viewer")
@@ -441,11 +444,14 @@ class ImageViewer(Gtk.Application):
             layer = 0
             while len([True for other_region in regions_with_layers if other_region["layer"] == layer and other_region["y2"] > region["y1"] and region["y2"] > other_region["y1"]]) > 0:
                 layer += 1
-            regions_with_layers.append({
+            region_with_layer = {
                 "y1": region["y1"],
                 "y2": region["y2"],
                 "layer": layer
-            })
+            }
+            if "i" in region:
+                region_with_layer["i"] = region["i"]
+            regions_with_layers.append(region_with_layer)
         return regions_with_layers
 
     def on_draw(self, area, ctx, width, height):
@@ -464,7 +470,7 @@ class ImageViewer(Gtk.Application):
         image_width = self.pixbuf.get_width()
         image_height = self.pixbuf.get_height()
 
-        all_regions = self.regions[:]
+        all_regions = [{'y1': region["y1"], 'y2': region["y2"], 'i': i} for i, region in enumerate(self.regions[:])]
         temp_region = None
         if self.current_region_temp:
             y1, y2 = self.current_region_temp
@@ -518,6 +524,45 @@ class ImageViewer(Gtk.Application):
         # ctx.rectangle(self.offset_x - BOX_WIDTH - PADDING, self.image_content_start * self.scale + self.offset_y, BOX_WIDTH/2, self.image_content_end * self.scale - self.image_content_start * self.scale)
         # ctx.fill()
 
+        self.region_delete_buttons.clear()
+
+        for i, region in enumerate(regions_with_layers):
+            if not "i" in region:
+                continue
+            
+            col = region["layer"]
+            x = self.pixbuf.get_width() * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
+            y1 = ((region['y1'] + region['y2']) / 2) * self.scale + self.offset_y - BOX_WIDTH/2
+            y2 = y1 + BOX_WIDTH
+            h = abs(y2 - y1)
+            
+            is_hovered = self.hovered_delete_button and self.hovered_delete_button["region"] == region["i"]
+
+            if is_hovered:
+                # Draw colored box behind "X"
+                ctx.set_source_rgba(0, 0, 0, 1.0)
+                ctx.rectangle(x, y1, BOX_WIDTH, h)
+                ctx.fill()
+                ctx.set_source_rgba(1, 1, 1, 1.0)  # black "X"
+            else:
+                # ctx.set_source_rgba(*COLORS[i % len(COLORS)])  # colored "X"
+                ctx.set_source_rgba(0, 0, 0, 1.0)  # black "X"
+
+            font_size = 16
+            ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            ctx.set_font_size(font_size)
+            (x_bearing, y_bearing, text_width, text_height, _, _) = ctx.text_extents("X")
+
+            x_center = x + BOX_WIDTH / 2 - text_width / 2
+            y_center = y1 + h / 2 + text_height / 2
+            ctx.move_to(x_center, y_center)
+            ctx.show_text("X")
+
+            self.region_delete_buttons.append({
+                "region": region["i"],
+                "bbox": (x, y1, BOX_WIDTH, h)
+            })
+
     def on_zoom(self, gesture, scale):
         center_x = self.drawing_area.get_allocated_width() / 2
         center_y =  self.drawing_area.get_allocated_height() / 2
@@ -567,6 +612,15 @@ class ImageViewer(Gtk.Application):
         self.drawing_area.queue_draw()
 
     def on_click_start(self, gesture, n_press, x, y):
+        for button in self.region_delete_buttons:
+            x0, y0, w, h = button["bbox"]
+            if x >= x0 and x <= x0 + w and y >= y0 and y <= y0 + h:
+                print("clicked delete", button["region"])
+                del self.regions[button["region"]]
+                self.save_regions()
+                self.drawing_area.queue_draw()
+                return
+
         mouse_y = (y - self.offset_y) / self.scale
 
         if self.current_region_start != None and self.current_region_temp != None:
@@ -578,19 +632,25 @@ class ImageViewer(Gtk.Application):
         self.current_region_start = mouse_y
         image_width = self.pixbuf.get_width()
         regions_with_layers = self.get_regions_with_layers(self.regions)
-        for i, region in enumerate(self.regions):
-            grabbed_top = abs(mouse_y-region["y1"]) < 10
-            grabbed_bottom = abs(mouse_y-region["y2"]) < 10
+        grabbed = False
+        for i, region in enumerate(regions_with_layers):
+            grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
+            grabbed_bottom = abs(mouse_y-region["y2"])*self.scale < 10
             if grabbed_top or grabbed_bottom:
                 col = region["layer"]
                 box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
                 if x >= box_x and x < box_x + BOX_WIDTH:
-                    self.regions.remove(region)
+                    grabbed = True
+                    del self.regions[i]
                     if grabbed_top:
                         self.current_region_start = region["y2"]
                     else:
                         self.current_region_start = region["y1"]
                     break
+        
+        if not grabbed:
+            self.current_region_start = mouse_y
+
         self.current_region_temp = (self.current_region_start, mouse_y)
         self.drawing_area.queue_draw()
 
@@ -602,6 +662,39 @@ class ImageViewer(Gtk.Application):
             y_current = min(max(y_current, self.image_content_start), self.image_content_end)
             self.current_region_temp = (self.current_region_start, y_current)
             self.drawing_area.queue_draw()
+        
+        hovered = None
+        for button in self.region_delete_buttons:
+            x0, y0, w, h = button["bbox"]
+            if x >= x0 and x <= x0 + w and y >= y0 and y <= y0 + h:
+                hovered = button
+                break
+
+        if hovered != self.hovered_delete_button:
+            self.hovered_delete_button = hovered
+            self.drawing_area.queue_draw()
+        
+        grabbing = False
+
+        img_height = self.pixbuf.get_height()
+        mouse_y = (y - self.offset_y) / self.scale
+        mouse_y = min(max(mouse_y, self.image_content_start), self.image_content_end)
+        image_width = self.pixbuf.get_width()
+        regions_with_layers = self.get_regions_with_layers(self.regions)
+        for i, region in enumerate(regions_with_layers):
+            grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
+            grabbed_bottom = abs(mouse_y-region["y2"])*self.scale < 10
+            if grabbed_top or grabbed_bottom:
+                col = region["layer"]
+                box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
+                if x >= box_x and x < box_x + BOX_WIDTH:
+                    grabbing = True
+        
+        if grabbing and not hovered:
+            self.window.set_cursor(Gdk.Cursor.new_from_name("row-resize"))
+        else:
+            self.window.set_cursor(None)
+
 
     def on_click_end(self, gesture, n_press, x, y):
         if self.current_region_start != None:
