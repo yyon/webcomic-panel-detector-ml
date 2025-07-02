@@ -54,7 +54,9 @@ def sliding_window_inference(onnx_session, image_path, threshold=0.5):
     scale = original_width / sliding_image.target_width
 
     input_name = onnx_session.get_inputs()[0].name
+    print("input_name", onnx_session.get_inputs()[0].name)
     output_names = [o.name for o in onnx_session.get_outputs()]  # Expecting ["boxes", "labels", "scores"]
+    print("output_names", output_names)
 
     all_boxes = []
 

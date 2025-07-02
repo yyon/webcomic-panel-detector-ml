@@ -161,6 +161,9 @@ class ImageViewer(Gtk.Application):
         self.current_region_start = None
         self.current_region_temp = None
 
+        self.undo_history = []
+        self.redo_history = []
+
         self.last_drag_x = 0
         self.last_drag_y = 0
 
@@ -199,6 +202,19 @@ class ImageViewer(Gtk.Application):
         # Add spacer
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
+        self.toolbar.append(spacer)
+
+        self.undo_button = Gtk.Button(label="undo")
+        self.undo_button.connect("clicked", self.undo)
+        self.toolbar.append(self.undo_button)
+
+        self.redo_button = Gtk.Button(label="redo")
+        self.redo_button.connect("clicked", self.redo)
+        self.toolbar.append(self.redo_button)
+
+
+        # Add spacer
+        spacer = Gtk.Box()
         self.toolbar.append(spacer)
 
         # single
@@ -314,7 +330,11 @@ class ImageViewer(Gtk.Application):
                 json_text = f.read()
                 loaded_regions = json.loads(json_text)
                 self.regions = [{'y1': region[0], 'y2': region[0] + region[1]} for region in loaded_regions]
-        
+                self.undo_history = [[{'y1': region[0], 'y2': region[0] + region[1]} for region in loaded_regions]]
+                self.redo_history = []
+                self.undo_button.set_sensitive(False)
+                self.redo_button.set_sensitive(False)
+
             # if len(self.regions) > 0 and (self.regions[0]['y1'] < self.image_content_start or self.regions[-1]['y2'] > self.image_content_end):
             #     self.regions[0]['y1'] = max(self.regions[0]['y1'], self.image_content_start)
             #     self.regions[-1]['y2'] = min(self.regions[-1]['y2'], self.image_content_end)
@@ -377,6 +397,16 @@ class ImageViewer(Gtk.Application):
         if keyval == Gdk.KEY_Escape:
             self.on_escape_pressed()
             return True  # Event has been handled
+        
+        # Check for Ctrl+Z
+        if keyval == Gdk.KEY_z and (state & Gdk.ModifierType.CONTROL_MASK):
+            self.undo(None)
+            return True  # Stop further handling
+
+        # Check for Ctrl+Y
+        if keyval == Gdk.KEY_y and (state & Gdk.ModifierType.CONTROL_MASK):
+            self.redo(None)
+            return True
         return False  # Event not handled
 
     def on_escape_pressed(self):
@@ -603,7 +633,38 @@ class ImageViewer(Gtk.Application):
     def get_json(self, image_file):
         return image_file.rsplit(".", 1)[0] + ".json"
     
-    def save_regions(self):
+    def undo(self, button):
+        if len(self.undo_history) <= 1:
+            print("no more undo history")
+            return
+        self.redo_history.append([{'y1': region['y1'], 'y2': region['y2']} for region in self.regions])
+        self.undo_history.pop()
+        new_regions = self.undo_history[-1]
+        self.regions = [{'y1': region['y1'], 'y2': region['y2']} for region in new_regions]
+        self.save_regions(False)
+        self.current_region_start = None
+        self.current_region_temp = None
+        self.drawing_area.queue_draw()
+    
+    def redo(self, button):
+        if len(self.redo_history) == 0:
+            print("no more redo history")
+            return
+        self.regions = self.redo_history.pop()
+        self.save_regions(True, True)
+        self.current_region_start = None
+        self.current_region_temp = None
+        self.drawing_area.queue_draw()
+    
+    def save_regions(self, save_history = True, is_redo = False):
+        if save_history:
+            self.undo_history.append([{'y1': region['y1'], 'y2': region['y2']} for region in self.regions])
+            if not is_redo:
+                self.redo_history = []
+        
+        self.undo_button.set_sensitive(len(self.undo_history) > 1)
+        self.redo_button.set_sensitive(len(self.redo_history) > 0)
+
         image_file = self.image_files[self.current_image_index]
         json_file = self.get_json(image_file)
         if len(self.regions) == 0:
