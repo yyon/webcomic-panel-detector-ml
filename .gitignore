@@ -5,3 +5,4 @@ test_windows
 model
 model.onnx
 __pycache__
+model.bak

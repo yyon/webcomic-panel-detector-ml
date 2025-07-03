@@ -158,6 +158,9 @@ class SlidingWindowImage():
         #     crop = crop
         #     boxes = torch.tensor(boxes, dtype=torch.float32)
         #     labels = torch.ones((len(boxes),), dtype=torch.int64)
+        
+        if boxes.numel() == 0:
+            boxes = boxes.reshape(0, 4)
 
         target = {
             'boxes': boxes,

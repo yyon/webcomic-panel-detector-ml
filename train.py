@@ -61,6 +61,12 @@ class SlidingWindowVerticalRegionDataset(Dataset):
 
 def train(model, dataset, device, num_epochs=10):
     model.to(device)
+    if os.path.exists("model"):
+        print(f"Resuming training from {"model"}")
+        model.load_state_dict(torch.load("model", map_location=device))
+    else:
+        print("Starting training from scratch")
+
     model.train()
     data_loader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
     optimizer = optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
@@ -118,12 +124,13 @@ def sliding_window_inference(model, image, window_height=1024, stride=512, thres
 if __name__ == "__main__":
     dataset = SlidingWindowVerticalRegionDataset(train_dir)
 
-    for img_i, sample_i in dataset.images_samples:
-        full_image = dataset.images[img_i]
-        img_name = os.path.basename(full_image.image_path)
-        img, target = full_image[sample_i]
-        test_out_path = os.path.join("train", img_name.replace(".png", "") + "_" + str(sample_i) + ".png")
-        save_image(img, test_out_path, target["boxes"])
+    # os.makedirs("train", exist_ok=True)
+    # for img_i, sample_i in dataset.images_samples:
+    #     full_image = dataset.images[img_i]
+    #     img_name = os.path.basename(full_image.image_path)
+    #     img, target = full_image[sample_i]
+    #     test_out_path = os.path.join("train", img_name.replace(".png", "") + "_" + str(sample_i) + ".png")
+    #     save_image(img, test_out_path, target["boxes"])
 
     device = torch.device("cpu") # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = get_model()
