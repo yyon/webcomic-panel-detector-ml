@@ -802,7 +802,6 @@ for (const subFolderName of fs.readdirSync(inFolder)) {
     }
 }
 
-const inputName = inFolder.replaceAll("/", "_");
 
 const outFolder = process.argv[3];
 if (outFolder == undefined) {
@@ -814,6 +813,8 @@ if (!fs.existsSync(outFolder)){
 
 for (const folder of folders) {
     const scans = [];
+
+    const inputName = folder.replaceAll("/", "_");
 
     for (const fileName of fs.readdirSync(folder)) {
         const file = path.join(folder, fileName);
