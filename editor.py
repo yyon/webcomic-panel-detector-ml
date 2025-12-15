@@ -4,6 +4,8 @@ import cairo
 import os
 import json
 import numpy as np
+from enum import Enum
+import copy
 
 from gi.repository import GLib
 
@@ -18,18 +20,18 @@ args = parser.parse_args()
 images_dir = args.images_dir
 
 COLORS = [ \
-    (1, 0, 0),
-    (0, 1, 0),
-    (0, 0, 1),
-    (1, 1, 0),
-    (0, 1, 1),
-    (1, 0, 1),
+    (1, 0.4, 0.4),
+    (0.4, 1, 0.4),
+    (0.4, 0.4, 1),
+    (1, 1, 0.4),
+    (0.4, 1, 1),
+    (1, 0.4, 1),
 ]
 
-BOX_WIDTH = 30
+BOX_WIDTH = 40
 PADDING = 2
 COLUMNS = 5
-
+BUTTON_SPACING = 10
 
 def chunk_pixbuf(pixbuf, chunk_height):
     """Chunk a long vertical GdkPixbuf.Pixbuf into multiple GdkPixbuf.Pixbuf"""
@@ -143,6 +145,25 @@ class ConfirmDialog(Gtk.MessageDialog):
             text="Are you sure?",
         )
 
+class FeatureType(int, Enum):
+    PANEL = 0
+    TEXTBOX = 1
+    SPEECH_UP = 2
+    SPEECH_DOWN = 3
+
+class ButtonType(int, Enum):
+    DELETE = 0
+    TEXTBOX = 1
+    SPEECH_UP = 2
+    SPEECH_DOWN = 3
+
+BUTTON_TEXT = {
+    ButtonType.DELETE: "X",
+    ButtonType.TEXTBOX: "-",
+    ButtonType.SPEECH_UP: "^",
+    ButtonType.SPEECH_DOWN: "v"
+}
+
 class ImageViewer(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="org.example.ImageViewer")
@@ -157,7 +178,7 @@ class ImageViewer(Gtk.Application):
         self.offset_x = 0
         self.offset_y = 0
 
-        self.regions = []
+        self.regions = {True: [], False: []}
         self.current_region_start = None
         self.current_region_temp = None
 
@@ -169,8 +190,10 @@ class ImageViewer(Gtk.Application):
 
         self.last_pointer_position = None
 
-        self.region_delete_buttons = []
-        self.hovered_delete_button = None
+        self.region_buttons = []
+        self.hovered_region_button = None
+
+        self.textbox_mode = False
 
     def on_activate(self, app):
         self.window = Gtk.ApplicationWindow(application=app)
@@ -202,6 +225,22 @@ class ImageViewer(Gtk.Application):
         self.status_label = Gtk.Label()
         self.toolbar.append(self.status_label)
 
+        # Add spacer
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        self.toolbar.append(spacer)
+
+        # mode
+        radio1 = Gtk.CheckButton(label="⌧ Panels")
+        radio1.set_active(True)
+        radio1.connect("toggled", self.set_mode, False)
+        self.toolbar.append(radio1)
+
+        radio2 = Gtk.CheckButton(label="🗨 Textboxes")
+        radio2.set_group(radio1)
+        radio2.connect("toggled", self.set_mode, True)
+        self.toolbar.append(radio2)
+        
         # Add spacer
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
@@ -285,6 +324,11 @@ class ImageViewer(Gtk.Application):
         key_controller.connect("key-pressed", self.on_key_press)
         self.window.add_controller(key_controller)
 
+    def set_mode(self, button, mode):
+        self.textbox_mode = mode
+        self.drawing_area.queue_draw()
+        return True
+
     def load_image_files(self):
         try:
             self.image_files = [
@@ -321,7 +365,7 @@ class ImageViewer(Gtk.Application):
         self.next_button.set_sensitive(self.current_image_index < len(self.image_files) - 1)
         
         # Reset view and regions
-        self.regions = []
+        self.regions = {True: [], False: []}
         self.current_region_start = None
         self.current_region_temp = None
         self.init_scale()
@@ -332,8 +376,8 @@ class ImageViewer(Gtk.Application):
             with open(json_file, "r") as f:
                 json_text = f.read()
                 loaded_regions = json.loads(json_text)
-                self.regions = [{'y1': region[0], 'y2': region[0] + region[1]} for region in loaded_regions]
-                self.undo_history = [[{'y1': region[0], 'y2': region[0] + region[1]} for region in loaded_regions]]
+                self.regions = {False: [{'y1': region[0], 'y2': region[0] + region[1], 'type': FeatureType.PANEL} for region in loaded_regions if len(region) == 2 or region[2] == 0], True: [{'y1': region[0], 'y2': region[0] + region[1], 'type': FeatureType(region[2])} for region in loaded_regions if len(region) > 2 and region[2] != 0]}
+                self.undo_history = [copy.deepcopy(self.regions)]
                 self.redo_history = []
                 self.undo_button.set_sensitive(False)
                 self.redo_button.set_sensitive(False)
@@ -365,14 +409,15 @@ class ImageViewer(Gtk.Application):
 
     def on_single_region_clicked(self, button):
         img_height = self.pixbuf.get_height()
-        self.regions = [{'y1': self.image_content_start, 'y2': self.image_content_end}] # [{'y1': 0, 'y2': img_height}]
+        feature_type = FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL
+        self.regions[self.textbox_mode] = [{'y1': self.image_content_start, 'y2': self.image_content_end, 'type': feature_type}] # [{'y1': 0, 'y2': img_height}]
         self.current_region_start = None
         self.current_region_temp = None
         self.save_regions()
         self.drawing_area.queue_draw()
 
     def on_clear_regions_clicked(self, button):
-        self.regions = []
+        self.regions = {False: [], True: []}
         self.current_region_start = None
         self.current_region_temp = None
         self.save_regions()
@@ -447,7 +492,8 @@ class ImageViewer(Gtk.Application):
             region_with_layer = {
                 "y1": region["y1"],
                 "y2": region["y2"],
-                "layer": layer
+                "layer": layer,
+                "type": region["type"]
             }
             if "i" in region:
                 region_with_layer["i"] = region["i"]
@@ -470,7 +516,7 @@ class ImageViewer(Gtk.Application):
         image_width = self.pixbuf.get_width()
         image_height = self.pixbuf.get_height()
 
-        all_regions = [{'y1': region["y1"], 'y2': region["y2"], 'i': i} for i, region in enumerate(self.regions[:])]
+        all_regions = [{'y1': region["y1"], 'y2': region["y2"], 'type': region["type"], 'i': i} for i, region in enumerate(self.regions[self.textbox_mode][:])]
         temp_region = None
         if self.current_region_temp:
             y1, y2 = self.current_region_temp
@@ -524,7 +570,7 @@ class ImageViewer(Gtk.Application):
         # ctx.rectangle(self.offset_x - BOX_WIDTH - PADDING, self.image_content_start * self.scale + self.offset_y, BOX_WIDTH/2, self.image_content_end * self.scale - self.image_content_start * self.scale)
         # ctx.fill()
 
-        self.region_delete_buttons.clear()
+        self.region_buttons.clear()
 
         for i, region in enumerate(regions_with_layers):
             if not "i" in region:
@@ -532,36 +578,54 @@ class ImageViewer(Gtk.Application):
             
             col = region["layer"]
             x = self.pixbuf.get_width() * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
-            y1 = ((region['y1'] + region['y2']) / 2) * self.scale + self.offset_y - BOX_WIDTH/2
-            y2 = y1 + BOX_WIDTH
-            h = abs(y2 - y1)
-            
-            is_hovered = self.hovered_delete_button and self.hovered_delete_button["region"] == region["i"]
 
-            if is_hovered:
-                # Draw colored box behind "X"
-                ctx.set_source_rgba(0, 0, 0, 1.0)
-                ctx.rectangle(x, y1, BOX_WIDTH, h)
-                ctx.fill()
-                ctx.set_source_rgba(1, 1, 1, 1.0)  # black "X"
+            if self.textbox_mode:
+                buttons = [ButtonType.SPEECH_UP, ButtonType.TEXTBOX, ButtonType.SPEECH_DOWN, ButtonType.DELETE]
             else:
-                # ctx.set_source_rgba(*COLORS[i % len(COLORS)])  # colored "X"
-                ctx.set_source_rgba(0, 0, 0, 1.0)  # black "X"
+                buttons = [ButtonType.DELETE]
 
-            font_size = 16
-            ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-            ctx.set_font_size(font_size)
-            (x_bearing, y_bearing, text_width, text_height, _, _) = ctx.text_extents("X")
+            y_center = ((region['y1'] + region['y2']) / 2) * self.scale + self.offset_y
+            y_top = int(y_center - (BOX_WIDTH*len(buttons) + BUTTON_SPACING*(len(buttons) - 1))/2)
 
-            x_center = x + BOX_WIDTH / 2 - text_width / 2
-            y_center = y1 + h / 2 + text_height / 2
-            ctx.move_to(x_center, y_center)
-            ctx.show_text("X")
+            for j, button_type in enumerate(buttons):
+                is_hovered = self.hovered_region_button and self.hovered_region_button["region"] == region["i"] and button_type == self.hovered_region_button["type"]
 
-            self.region_delete_buttons.append({
-                "region": region["i"],
-                "bbox": (x, y1, BOX_WIDTH, h)
-            })
+                y1 = y_top + j*(BOX_WIDTH + BUTTON_SPACING)
+                y2 = y1 + BOX_WIDTH
+                h = abs(y2 - y1)
+
+                if is_hovered:
+                    # Draw colored box behind "X"
+                    ctx.set_source_rgba(0, 0, 0, 1.0)
+                    ctx.rectangle(x, y1, BOX_WIDTH, h)
+                    ctx.fill()
+                    ctx.set_source_rgba(1, 1, 1, 1.0)  # black "X"
+                else:
+                    # ctx.set_source_rgba(*COLORS[i % len(COLORS)])  # colored "X"
+                    ctx.set_source_rgba(0, 0, 0, 1.0)  # black "X"
+                
+                if self.textbox_mode:
+                    if (button_type == ButtonType.TEXTBOX and region["type"] == FeatureType.TEXTBOX) or (button_type == ButtonType.SPEECH_UP and region["type"] == FeatureType.SPEECH_UP) or (button_type == ButtonType.SPEECH_DOWN and region["type"] == FeatureType.SPEECH_DOWN):
+                        ctx.set_source_rgba(0, 0, 0, 1.0)
+                        ctx.rectangle(x, y1, BOX_WIDTH, h)
+                        ctx.fill()
+                        ctx.set_source_rgba(1, 1, 1, 1.0)  # black "X"
+
+                font_size = 40
+                ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+                ctx.set_font_size(font_size)
+                (x_bearing, y_bearing, text_width, text_height, _, _) = ctx.text_extents("X")
+
+                x_center = x + BOX_WIDTH / 2 - text_width / 2
+                y_center = y1 + h / 2 + text_height / 2
+                ctx.move_to(x_center, y_center)
+                ctx.show_text(BUTTON_TEXT[button_type])
+
+                self.region_buttons.append({
+                    "region": region["i"],
+                    "type": button_type,
+                    "bbox": (x, y1, BOX_WIDTH, h)
+                })
 
     def on_zoom(self, gesture, scale):
         center_x = self.drawing_area.get_allocated_width() / 2
@@ -612,11 +676,19 @@ class ImageViewer(Gtk.Application):
         self.drawing_area.queue_draw()
 
     def on_click_start(self, gesture, n_press, x, y):
-        for button in self.region_delete_buttons:
+        for button in self.region_buttons:
             x0, y0, w, h = button["bbox"]
             if x >= x0 and x <= x0 + w and y >= y0 and y <= y0 + h:
-                print("clicked delete", button["region"])
-                del self.regions[button["region"]]
+                print("clicked button", button["region"])
+                if button["type"] == ButtonType.DELETE:
+                    del self.regions[self.textbox_mode][button["region"]]
+                else:
+                    region_map = {
+                        ButtonType.TEXTBOX: FeatureType.TEXTBOX,
+                        ButtonType.SPEECH_UP: FeatureType.SPEECH_UP,
+                        ButtonType.SPEECH_DOWN: FeatureType.SPEECH_DOWN,
+                    }
+                    self.regions[self.textbox_mode][button["region"]]["type"] = region_map[button["type"]]
                 self.save_regions()
                 self.drawing_area.queue_draw()
                 return
@@ -631,7 +703,7 @@ class ImageViewer(Gtk.Application):
         mouse_y = min(max(mouse_y, self.image_content_start), self.image_content_end)
         self.current_region_start = mouse_y
         image_width = self.pixbuf.get_width()
-        regions_with_layers = self.get_regions_with_layers(self.regions)
+        regions_with_layers = self.get_regions_with_layers(self.regions[self.textbox_mode])
         grabbed = False
         for i, region in enumerate(regions_with_layers):
             grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
@@ -641,7 +713,7 @@ class ImageViewer(Gtk.Application):
                 box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
                 if x >= box_x and x < box_x + BOX_WIDTH:
                     grabbed = True
-                    del self.regions[i]
+                    del self.regions[self.textbox_mode][i]
                     if grabbed_top:
                         self.current_region_start = region["y2"]
                     else:
@@ -664,14 +736,14 @@ class ImageViewer(Gtk.Application):
             self.drawing_area.queue_draw()
         
         hovered = None
-        for button in self.region_delete_buttons:
+        for button in self.region_buttons:
             x0, y0, w, h = button["bbox"]
             if x >= x0 and x <= x0 + w and y >= y0 and y <= y0 + h:
                 hovered = button
                 break
 
-        if hovered != self.hovered_delete_button:
-            self.hovered_delete_button = hovered
+        if hovered != self.hovered_region_button:
+            self.hovered_region_button = hovered
             self.drawing_area.queue_draw()
         
         grabbing = False
@@ -680,7 +752,7 @@ class ImageViewer(Gtk.Application):
         mouse_y = (y - self.offset_y) / self.scale
         mouse_y = min(max(mouse_y, self.image_content_start), self.image_content_end)
         image_width = self.pixbuf.get_width()
-        regions_with_layers = self.get_regions_with_layers(self.regions)
+        regions_with_layers = self.get_regions_with_layers(self.regions[self.textbox_mode])
         for i, region in enumerate(regions_with_layers):
             grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
             grabbed_bottom = abs(mouse_y-region["y2"])*self.scale < 10
@@ -712,12 +784,14 @@ class ImageViewer(Gtk.Application):
 
         if abs(y1-y2) < 5:
             y1 = 0
-            for region in self.regions:
+            for region in self.regions[self.textbox_mode]:
                 if region['y2'] < y2:
                     y1 = region['y2']
+    
+        feature_type = FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL
 
-        self.regions.append({'y1': y1, 'y2': y2})
-        self.regions.sort(key=lambda x : x['y1'])
+        self.regions[self.textbox_mode].append({'y1': y1, 'y2': y2, 'type': feature_type})
+        self.regions[self.textbox_mode].sort(key=lambda x : x['y1'])
         self.save_regions()
         self.current_region_start = None
         self.current_region_temp = None
@@ -730,10 +804,10 @@ class ImageViewer(Gtk.Application):
         if len(self.undo_history) <= 1:
             print("no more undo history")
             return
-        self.redo_history.append([{'y1': region['y1'], 'y2': region['y2']} for region in self.regions])
+        self.redo_history.append(copy.deepcopy(self.regions))
         self.undo_history.pop()
         new_regions = self.undo_history[-1]
-        self.regions = [{'y1': region['y1'], 'y2': region['y2']} for region in new_regions]
+        self.regions = copy.deepcopy(new_regions)
         self.save_regions(False)
         self.current_region_start = None
         self.current_region_temp = None
@@ -743,7 +817,7 @@ class ImageViewer(Gtk.Application):
         if len(self.redo_history) == 0:
             print("no more redo history")
             return
-        self.regions = self.redo_history.pop()
+        self.regions = copy.deepcopy(self.redo_history.pop())
         self.save_regions(True, True)
         self.current_region_start = None
         self.current_region_temp = None
@@ -751,7 +825,7 @@ class ImageViewer(Gtk.Application):
     
     def save_regions(self, save_history = True, is_redo = False):
         if save_history:
-            self.undo_history.append([{'y1': region['y1'], 'y2': region['y2']} for region in self.regions])
+            self.undo_history.append(copy.deepcopy(self.regions))
             if not is_redo:
                 self.redo_history = []
         
@@ -760,12 +834,19 @@ class ImageViewer(Gtk.Application):
 
         image_file = self.image_files[self.current_image_index]
         json_file = self.get_json(image_file)
-        if len(self.regions) == 0:
+        if len(self.regions[self.textbox_mode]) == 0:
             if os.path.exists(json_file):
                 os.remove(json_file)
             return
 
-        regions_arr = [[region['y1'], region['y2'] - region['y1']] for region in self.regions]
+        regions_arr = []
+        for textbox_mode in [True, False]:
+            for region in self.regions[textbox_mode]:
+                if textbox_mode == True:
+                    feature_type = region['type']
+                else:
+                    feature_type = FeatureType.PANEL
+                regions_arr.append([region['y1'], region['y2'] - region['y1'], feature_type])
 
         with open(json_file, "w") as f:
             json_text = f.write(json.dumps(regions_arr))
