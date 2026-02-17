@@ -9,7 +9,11 @@ from torch.utils.data import Dataset
 
 import torchvision
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor, FasterRCNN_ResNet50_FPN_Weights
-from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn, FasterRCNN_MobileNet_V3_Large_320_FPN_Weights
+from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_fpn, FasterRCNN_MobileNet_V3_Large_FPN_Weights
+
+from torchvision.models.detection import fcos_resnet50_fpn
+from torchvision.models.detection.fcos import FCOSHead
+
 from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch
@@ -30,9 +34,10 @@ from PIL import Image
 NUM_CLASSES = 2
 
 def get_model():
-    model = fasterrcnn_mobilenet_v3_large_320_fpn(weights=FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT) # torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+    model = fasterrcnn_mobilenet_v3_large_fpn(weights=FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT)
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, NUM_CLASSES)
+
     return model
 
 def save_image(image, path, boxes):
@@ -67,7 +72,7 @@ class SlidingWindowImage():
                 regions = json.load(f)
 
         # Convert to [y1, y2]
-        regions = [[top, top + height] for top, height in regions]
+        regions = [[top, top + height] for top, height, feature_type in regions]
 
         # Generate windows
         window_height = round(self.window_height * w / self.target_width)

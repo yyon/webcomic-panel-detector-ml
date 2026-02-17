@@ -6,4 +6,4 @@ model
 model.onnx
 __pycache__
 model.bak
-model_panelsonly
+model_*

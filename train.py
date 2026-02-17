@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from common import get_model, SlidingWindowImage, save_image
+
 import os
 import json
 import torch
@@ -8,8 +10,6 @@ from torchvision.transforms.functional import convert_image_dtype
 from torch.utils.data import Dataset
 
 import torchvision
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor, FasterRCNN_ResNet50_FPN_Weights
-from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_fpn, FasterRCNN_MobileNet_V3_Large_320_FPN_Weights
 from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch
@@ -24,8 +24,6 @@ from torch.utils.data import Dataset
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-
-from common import get_model, SlidingWindowImage, save_image
 
 import argparse
 
@@ -84,6 +82,17 @@ def train(model, dataset, device, num_epochs=10):
 
             optimizer.zero_grad()
             losses.backward()
+
+            box_pred = model.roi_heads.box_predictor.bbox_pred
+            grad = box_pred.weight.grad  # shape: [4 * num_classes, hidden_dim]
+            tx = grad[0::4].abs().mean()
+            ty = grad[1::4].abs().mean()
+            tw = grad[2::4].abs().mean()
+            th = grad[3::4].abs().mean()
+
+            print("(tx, ty, tw, th) = ", tx, ty, tw, th)
+
+
             optimizer.step()
 
         print(f"Epoch {epoch + 1}: Loss = {losses.item():.4f}")

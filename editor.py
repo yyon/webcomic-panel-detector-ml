@@ -342,12 +342,11 @@ class ImageViewer(Gtk.Application):
             self.image_files = []
 
     def load_first_image(self):
-        index = 0
         for i, image_file in enumerate(self.image_files):
             if not os.path.exists(self.get_json(image_file)):
-                index = i
-                break
-        self.load_image_index(index)
+                self.load_image_index(i)
+                return False
+        self.load_image_index(0)
         return False
 
     def load_image_index(self, index):
@@ -520,7 +519,7 @@ class ImageViewer(Gtk.Application):
         temp_region = None
         if self.current_region_temp:
             y1, y2 = self.current_region_temp
-            temp_region = {'y1': y1, 'y2': y2}
+            temp_region = {'y1': y1, 'y2': y2, 'type': FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL}
             all_regions.append(temp_region)
             all_regions.sort(key=lambda x : x['y1'])
         
