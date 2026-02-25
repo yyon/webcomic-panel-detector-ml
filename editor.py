@@ -852,7 +852,7 @@ class ImageViewer(Gtk.Application):
         original_width = self.image_np.shape[1]
         original_height = self.image_np.shape[0]
 
-        img_width = 512
+        img_width = 1024
         img_height = int(original_height * img_width / original_width)
         img = cv2.resize(self.image_np[:, :, :3], dsize=(img_width, img_height), interpolation=cv2.INTER_CUBIC)
 
@@ -925,7 +925,7 @@ class ImageViewer(Gtk.Application):
             )
 
             res = cv2.floodFill(
-                bw,
+                gray,
                 None,
                 (seed_x, seed_y),
                 fill_color,
@@ -939,8 +939,8 @@ class ImageViewer(Gtk.Application):
             rx, ry, rw, rh = rect
             print("flood rect:", rect)
 
-            if ry <= y1 and ry + rh >= y2:
-                if y1 - ry < img_width * 0.25 and (ry + rh) - y2 < img_width * 0.25:
+            if (ry <= y1 and ry + rh >= y2) or rh > img_width * 0.15:
+                if y1 - ry < img_width * 0.5 and (ry + rh) - y2 < img_width * 0.5:
                     self.regions[True].append({
                         'y1': int(ry * original_width / img_width),
                         'y2': int((ry + rh) * original_width / img_width),
