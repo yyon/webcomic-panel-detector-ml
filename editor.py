@@ -14,6 +14,9 @@ from gi.repository import Gtk, Gdk, GdkPixbuf, Gio
 
 import argparse
 
+import pytesseract
+import cv2
+
 parser = argparse.ArgumentParser(prog='editor.py')
 parser.add_argument('images_dir')
 args = parser.parse_args()
@@ -135,6 +138,27 @@ def find_panels_np(image_np):
     
     return [start, end]
 
+def boxes_close(a, b, x_tol=40, y_tol=25):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+
+    horizontal_gap = max(0, max(bx1 - ax2, ax1 - bx2))
+    vertical_gap = max(0, max(by1 - ay2, ay1 - by2))
+
+    return horizontal_gap <= x_tol and vertical_gap <= y_tol
+
+
+def merge_boxes(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return [
+        min(ax1, bx1),
+        min(ay1, by1),
+        max(ax2, bx2),
+        max(ay2, by2),
+    ]
+
+
 class ConfirmDialog(Gtk.MessageDialog):
     def __init__(self, parent):
         super().__init__(
@@ -224,6 +248,16 @@ class ImageViewer(Gtk.Application):
         # Add status label
         self.status_label = Gtk.Label()
         self.toolbar.append(self.status_label)
+
+        # Add spacer
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        self.toolbar.append(spacer)
+
+        # textbox detection button
+        self.auto_text_button = Gtk.Button(label="Auto Detect Textboxes")
+        self.auto_text_button.connect("clicked", self.on_auto_detect_textboxes)
+        self.toolbar.append(self.auto_text_button)
 
         # Add spacer
         spacer = Gtk.Box()
@@ -342,10 +376,10 @@ class ImageViewer(Gtk.Application):
             self.image_files = []
 
     def load_first_image(self):
-        for i, image_file in enumerate(self.image_files):
-            if not os.path.exists(self.get_json(image_file)):
-                self.load_image_index(i)
-                return False
+        # for i, image_file in enumerate(self.image_files):
+        #     if not os.path.exists(self.get_json(image_file)):
+        #         self.load_image_index(i)
+        #         return False
         self.load_image_index(0)
         return False
 
@@ -799,6 +833,117 @@ class ImageViewer(Gtk.Application):
     def get_json(self, image_file):
         return image_file.rsplit(".", 1)[0] + ".json"
     
+    def on_auto_detect_textboxes(self, button):
+        print("img size", self.image_np.shape)
+        
+        self.textbox_mode = True
+
+        original_width = self.image_np.shape[1]
+        original_height = self.image_np.shape[0]
+
+        img_width = 512
+        img_height = int(original_height * img_width / original_width)
+        img = cv2.resize(self.image_np[:, :, :3], dsize=(img_width, img_height), interpolation=cv2.INTER_CUBIC)
+
+        nearby_tolerance = int(img_width) * 0.05
+
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        bw = gray > (255/2)
+
+        results = pytesseract.image_to_data(bw, output_type=pytesseract.Output.DICT)
+
+        print("results", results)
+        if not results:
+            return
+
+        boxes = []
+
+        for i in range(len(results["conf"])):
+            conf = results["conf"][i]
+            x1 = int(results["left"][i])
+            x2 = x1 + int(results["width"][i])
+            y1 = int(results["top"][i])
+            y2 = y1 + int(results["height"][i])
+            text = results["text"][i]
+            print(conf > 50 and len(text.strip()) > 0, text, conf, x1, x2, y1, y2)
+            if conf > 50 and len(text.strip()) > 0:
+                boxes.append([x1, y1, x2, y2])
+        print("boxes", boxes)
+
+        merged = boxes
+        changed = True
+        while changed:
+            changed = False
+            new_merged = []
+
+            while merged:
+                box = merged.pop()
+                merged_with_existing = False
+
+                for i in range(len(new_merged)):
+                    if boxes_close(box, new_merged[i], nearby_tolerance, nearby_tolerance):
+                        new_merged[i] = merge_boxes(box, new_merged[i])
+                        changed = True
+                        merged_with_existing = True
+                        break
+
+                if not merged_with_existing:
+                    new_merged.append(box)
+
+            merged = new_merged
+        
+        print("merged", merged)
+
+        # Floodfill + add as TEXTBOX regions
+        for x1, y1, x2, y2 in merged:
+            mid_y = int((y1 + y2) / 2)
+            mid_x = int((x1 + x2) / 2)
+
+            seed_y = max(int(y1 - img_width * 0.01), 0)
+            seed_x = mid_x
+
+            print("floodfilling", seed_x, seed_y, img[seed_y][seed_x])
+
+            fill_color = (255, 0, 255)
+
+            flags = (
+                4 |                      # connectivity
+                cv2.FLOODFILL_MASK_ONLY |
+                cv2.FLOODFILL_FIXED_RANGE |
+                (255 << 8)
+            )
+
+            res = cv2.floodFill(
+                img,
+                None,
+                (seed_x, seed_y),
+                fill_color,
+                loDiff=(40, 40, 40),
+                upDiff=(40, 40, 40),
+                flags=flags
+            )
+
+            (num_pixels, image, mask, rect) = res
+
+            rx, ry, rw, rh = rect
+            print("flood rect:", rect)
+
+            if ry <= y1 and ry + rh >= y2:
+                if y1 - ry < img_width * 0.25 and (ry + rh) - y2 < img_width * 0.25:
+                    self.regions[True].append({
+                        'y1': int(ry * original_width / img_width),
+                        'y2': int((ry + rh) * original_width / img_width),
+                        'type': FeatureType.TEXTBOX
+                    })
+                else:
+                    print("too large")
+            else:
+                print("too small")
+
+        self.regions[True].sort(key=lambda x : x['y1'])
+        self.save_regions()
+        self.drawing_area.queue_draw()
+
     def undo(self, button):
         if len(self.undo_history) <= 1:
             print("no more undo history")
