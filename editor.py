@@ -242,6 +242,11 @@ class ImageViewer(Gtk.Application):
         self.next_button.connect("clicked", self.on_next_clicked)
         self.toolbar.append(self.next_button)
 
+        self.entry = Gtk.Entry()
+        self.entry.set_text("1")
+        self.entry.connect("activate", self.on_entry_enter)
+        self.toolbar.append(self.entry)
+
         # Add separator
         self.toolbar.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -425,8 +430,9 @@ class ImageViewer(Gtk.Application):
 
     def update_status(self):
         if self.image_files and 0 <= self.current_image_index < len(self.image_files):
+            self.entry.set_text(f"{self.current_image_index + 1}")
             self.status_label.set_text(
-                f"Image {self.current_image_index + 1} of {len(self.image_files)}: "
+                f"of {len(self.image_files)}: "
                 f"{os.path.basename(self.image_files[self.current_image_index])}"
             )
         else:
@@ -440,6 +446,11 @@ class ImageViewer(Gtk.Application):
         if self.current_image_index < len(self.image_files) - 1:
             self.load_image_index(self.current_image_index + 1)
 
+    def on_entry_enter(self, entry):
+        text = entry.get_text()
+        if text.isdigit():
+            self.load_image_index(int(text) - 1)
+            
     def on_single_region_clicked(self, button):
         img_height = self.pixbuf.get_height()
         feature_type = FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL
@@ -848,7 +859,7 @@ class ImageViewer(Gtk.Application):
         nearby_tolerance = int(img_width) * 0.05
 
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        bw = gray > (255/2)
+        bw = (gray > (255/2)).astype(np.uint8) * 255
 
         results = pytesseract.image_to_data(bw, output_type=pytesseract.Output.DICT)
 
@@ -904,7 +915,7 @@ class ImageViewer(Gtk.Application):
 
             print("floodfilling", seed_x, seed_y, img[seed_y][seed_x])
 
-            fill_color = (255, 0, 255)
+            fill_color = 155
 
             flags = (
                 4 |                      # connectivity
@@ -914,12 +925,12 @@ class ImageViewer(Gtk.Application):
             )
 
             res = cv2.floodFill(
-                img,
+                bw,
                 None,
                 (seed_x, seed_y),
                 fill_color,
-                loDiff=(40, 40, 40),
-                upDiff=(40, 40, 40),
+                loDiff=40,
+                upDiff=40,
                 flags=flags
             )
 
