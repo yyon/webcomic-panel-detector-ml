@@ -31,7 +31,7 @@ from albumentations.pytorch import ToTensorV2
 
 from PIL import Image
 
-NUM_CLASSES = 4
+NUM_CLASSES = 5
 
 def get_model():
     model = fasterrcnn_mobilenet_v3_large_fpn(weights=FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT)
@@ -72,7 +72,7 @@ class SlidingWindowImage():
                 regions = json.load(f)
 
         # Convert to [y1, y2]
-        regions = [[region[0], region[0] + region[1], (region[2] if len(region) == 3 else 0)] for region in regions]
+        regions = [[region[0], region[0] + region[1], region[2], region[3], region[4] + region[3]] for region in regions]
 
         # Generate windows
         window_height = round(self.window_height * w / self.target_width)
@@ -82,12 +82,12 @@ class SlidingWindowImage():
             # top = bottom - window_height
             crop_regions = []
 
-            for y1, y2, feature_type in regions:
+            for y1, y2, feature_type, x1, x2 in regions:
                 # Check if region overlaps with this window
                 if y2 > top and y1 < bottom:
                     new_y1 = max(min(y1, bottom), top) - top
                     new_y2 = max(min(y2, bottom), top) - top
-                    crop_regions.append([0, new_y1, image.shape[2], new_y2, feature_type])  # full width
+                    crop_regions.append([x1, new_y1, x2, new_y2, feature_type])  # full width
             
             if len(crop_regions) > 0 or not os.path.exists(ann_path):
                 self.samples.append({

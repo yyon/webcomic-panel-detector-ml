@@ -73,10 +73,12 @@ def sliding_window_inference(onnx_session, image_path, threshold=0.5):
         outputs = onnx_session.run(output_names, {input_name: crop_numpy})
         boxes, labels, scores = outputs
 
-        print("window:", top, boxes)
-        img_name = os.path.basename(sliding_image.image_path)
-        test_out_path = os.path.join("test_windows", img_name.replace(".png", "") + "_" + str(i) + ".png")
-        save_image(image_window, test_out_path, boxes.tolist())
+        print("boxes", boxes)
+        print("labels", labels)
+        # save_image(image_window, test_out_path, boxes.tolist())
+        # img_name = os.path.basename(sliding_image.image_path)
+        # test_out_path = os.path.join("test_windows", img_name.replace(".png", "") + "_" + str(i) + ".png")
+        # save_image(image_window, test_out_path, boxes.tolist())
 
         # Adjust boxes back to original image coordinates
         for box, label, score in zip(boxes, labels, scores):
@@ -84,8 +86,10 @@ def sliding_window_inference(onnx_session, image_path, threshold=0.5):
                 x1, y1, x2, y2 = box.tolist()
                 y1 = y1 * scale + top
                 y2 = y2 * scale + top
+                x1 = x1 * scale
+                x2 = x2 * scale
                 all_boxes.append({
-                    "box": [y1, y2],
+                    "box": [y1, y2, x1, x2],
                     "label": label-1,
                     "score": score,
                     "window_i": i,
@@ -128,16 +132,17 @@ def sliding_window_inference(onnx_session, image_path, threshold=0.5):
                 if to_remove_box != None:
                     to_remove.append(to_remove_box)
 
-    return [[box["box"][0], box["box"][1], label] for box in all_boxes if not box in to_remove]
+    return [box for box in all_boxes if not box in to_remove]
 
 def save_full_image(image_path, path, boxes):
     directory = os.path.dirname(path)
     if not os.path.exists(directory):
         os.mkdir(directory)
     shutil.copy(image_path, path)
+    print("saving", boxes)
     if boxes != None:
         with open(path.replace(".png", ".json"), "w") as f:
-            f.write(json.dumps([[int(box[0]), int(box[1] - box[0]), int(box[2])] for box in boxes]))
+            f.write(json.dumps([[int(box["box"][0]), int(box["box"][1] - box["box"][0]), int(box["label"]), int(box["box"][2]), int(box["box"][3]) - int(box["box"][2])] for box in boxes]))
 
 if __name__ == "__main__":
     ort_session = ort.InferenceSession("model.onnx")
