@@ -89,6 +89,8 @@ def train(model, dataset, device, num_epochs=10):
     data_loader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
     optimizer = optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
 
+    best_loss = None
+
     for epoch in range(num_epochs):
         data_loader_len = len(data_loader)
         for data_loader_i, data in enumerate(data_loader):
@@ -115,8 +117,14 @@ def train(model, dataset, device, num_epochs=10):
 
             optimizer.step()
 
+        loss = losses.item()
         print(f"Epoch {epoch + 1}: Loss = {losses.item():.4f}")
         torch.save(model.state_dict(), "model")
+
+        if best_loss == None or loss < best_loss:
+            print("new best!")
+            best_loss = loss
+            torch.save(model.state_dict(), "model_best")
 
 if __name__ == "__main__":
     dataset = SlidingWindowVerticalRegionDataset(train_dir)
