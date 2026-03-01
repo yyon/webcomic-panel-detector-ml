@@ -205,6 +205,7 @@ class ImageViewer(Gtk.Application):
         self.regions = {True: [], False: []}
         self.current_region_start = None
         self.current_region_temp = None
+        self.moving_horiz = None
 
         self.undo_history = []
         self.redo_history = []
@@ -408,13 +409,17 @@ class ImageViewer(Gtk.Application):
         self.current_region_temp = None
         self.init_scale()
 
+        img_width = self.pixbuf.get_width()
+
         # load regions from json
         json_file = self.get_json(image_file)
         if os.path.exists(json_file):
             with open(json_file, "r") as f:
                 json_text = f.read()
                 loaded_regions = json.loads(json_text)
-                self.regions = {False: [{'y1': region[0], 'y2': region[0] + region[1], 'type': FeatureType.PANEL} for region in loaded_regions if len(region) == 2 or region[2] == 0], True: [{'y1': region[0], 'y2': region[0] + region[1], 'type': FeatureType(region[2])} for region in loaded_regions if len(region) > 2 and region[2] != 0]}
+                print("json text", json_text)
+                self.regions = {False: [{'y1': region[0], 'y2': region[0] + region[1], 'type': FeatureType.PANEL, 'x1': 0 if len(region) <= 3 else region[3], 'x2': img_width if len(region) <= 3 else region[4] + region[3]} for region in loaded_regions if len(region) == 2 or region[2] == 0], True: [{'y1': region[0], 'y2': region[0] + region[1], 'type': FeatureType(region[2]), 'x1': 0 if len(region) <= 3 else region[3], 'x2': img_width if len(region) <= 3 else region[4] + region[3]} for region in loaded_regions if len(region) > 2 and region[2] != 0]}
+                print("self.regions", self.regions)
                 self.undo_history = [copy.deepcopy(self.regions)]
                 self.redo_history = []
                 self.undo_button.set_sensitive(False)
@@ -453,8 +458,9 @@ class ImageViewer(Gtk.Application):
             
     def on_single_region_clicked(self, button):
         img_height = self.pixbuf.get_height()
+        img_width = self.pixbuf.get_width()
         feature_type = FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL
-        self.regions[self.textbox_mode] = [{'y1': self.image_content_start, 'y2': self.image_content_end, 'type': feature_type}] # [{'y1': 0, 'y2': img_height}]
+        self.regions[self.textbox_mode] = [{'y1': self.image_content_start, 'y2': self.image_content_end, 'type': feature_type, 'x1': 0, 'x2': img_width}] # [{'y1': 0, 'y2': img_height}]
         self.current_region_start = None
         self.current_region_temp = None
         self.save_regions()
@@ -536,6 +542,8 @@ class ImageViewer(Gtk.Application):
             region_with_layer = {
                 "y1": region["y1"],
                 "y2": region["y2"],
+                "x1": region["x1"],
+                "x2": region["x2"],
                 "layer": layer,
                 "type": region["type"]
             }
@@ -560,15 +568,20 @@ class ImageViewer(Gtk.Application):
         image_width = self.pixbuf.get_width()
         image_height = self.pixbuf.get_height()
 
-        all_regions = [{'y1': region["y1"], 'y2': region["y2"], 'type': region["type"], 'i': i} for i, region in enumerate(self.regions[self.textbox_mode][:])]
+        all_regions = [{'y1': region["y1"], 'y2': region["y2"], 'x1': region['x1'], 'x2': region['x2'], 'type': region["type"], 'i': i} for i, region in enumerate(self.regions[self.textbox_mode][:])]
         temp_region = None
         if self.current_region_temp:
             y1, y2 = self.current_region_temp
-            temp_region = {'y1': y1, 'y2': y2, 'type': FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL}
+            temp_region = {'y1': y1, 'y2': y2, 'x1': 0, 'x2': image_width, 'type': FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL}
+            all_regions.append(temp_region)
+            all_regions.sort(key=lambda x : x['y1'])
+        if self.moving_horiz is not None:
+            temp_region = self.moving_horiz[1]
             all_regions.append(temp_region)
             all_regions.sort(key=lambda x : x['y1'])
         
         regions_with_layers = self.get_regions_with_layers(all_regions)
+        print("regions_with_layers", regions_with_layers)
 
         # for y in [self.image_content_start, self.image_content_end]:
         #     ctx.set_source_rgba(0,1,1,1)
@@ -594,20 +607,32 @@ class ImageViewer(Gtk.Application):
             col = region["layer"]
             right = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
             ctx.set_source_rgba(0,0,0,1)
-            ctx.set_line_width(4.0)
-            ctx.move_to(self.offset_x, region['y1'] * self.scale + self.offset_y)
-            ctx.line_to(right, region['y1'] * self.scale + self.offset_y)
+            ctx.set_line_width(6.0)
+            ctx.move_to(self.offset_x + region['x1'] * self.scale, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x2'] * self.scale, region['y1'] * self.scale + self.offset_y)
             ctx.stroke()
-            ctx.move_to(self.offset_x, region['y2'] * self.scale + self.offset_y)
-            ctx.line_to(right, region['y2'] * self.scale + self.offset_y)
+            ctx.move_to(self.offset_x + region['x1'] * self.scale, region['y2'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x2'] * self.scale, region['y2'] * self.scale + self.offset_y)
+            ctx.stroke()
+            ctx.move_to(self.offset_x + region['x1'] * self.scale, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x1'] * self.scale, region['y2'] * self.scale + self.offset_y)
+            ctx.stroke()
+            ctx.move_to(self.offset_x + region['x2'] * self.scale, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x2'] * self.scale, region['y2'] * self.scale + self.offset_y)
             ctx.stroke()
             ctx.set_source_rgba(*COLORS[i % len(COLORS)], 0.5 if region==temp_region else 1)
-            ctx.set_line_width(2.0)
-            ctx.move_to(self.offset_x, region['y1'] * self.scale + self.offset_y)
-            ctx.line_to(right, region['y1'] * self.scale + self.offset_y)
+            ctx.set_line_width(4.0)
+            ctx.move_to(self.offset_x + region['x1'] * self.scale, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x2'] * self.scale, region['y1'] * self.scale + self.offset_y)
             ctx.stroke()
-            ctx.move_to(self.offset_x, region['y2'] * self.scale + self.offset_y)
-            ctx.line_to(right, region['y2'] * self.scale + self.offset_y)
+            ctx.move_to(self.offset_x + region['x1'] * self.scale, region['y2'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x2'] * self.scale, region['y2'] * self.scale + self.offset_y)
+            ctx.stroke()
+            ctx.move_to(self.offset_x + region['x1'] * self.scale, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x1'] * self.scale, region['y2'] * self.scale + self.offset_y)
+            ctx.stroke()
+            ctx.move_to(self.offset_x + region['x2'] * self.scale, region['y1'] * self.scale + self.offset_y)
+            ctx.line_to(self.offset_x + region['x2'] * self.scale, region['y2'] * self.scale + self.offset_y)
             ctx.stroke()
 
         # ctx.set_source_rgba(1, 1, 1, 1)
@@ -737,6 +762,7 @@ class ImageViewer(Gtk.Application):
                 self.drawing_area.queue_draw()
                 return
 
+        mouse_x = (x - self.offset_x) / self.scale
         mouse_y = (y - self.offset_y) / self.scale
 
         if self.current_region_start != None and self.current_region_temp != None:
@@ -750,19 +776,30 @@ class ImageViewer(Gtk.Application):
         regions_with_layers = self.get_regions_with_layers(self.regions[self.textbox_mode])
         grabbed = False
         for i, region in enumerate(regions_with_layers):
-            grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
-            grabbed_bottom = abs(mouse_y-region["y2"])*self.scale < 10
-            if grabbed_top or grabbed_bottom:
-                col = region["layer"]
-                box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
-                if x >= box_x and x < box_x + BOX_WIDTH:
-                    grabbed = True
-                    del self.regions[self.textbox_mode][i]
-                    if grabbed_top:
-                        self.current_region_start = region["y2"]
-                    else:
-                        self.current_region_start = region["y1"]
-                    break
+            in_y = mouse_y < region["y2"] and mouse_y > region["y1"]
+            grabbed_left = abs(mouse_x - region["x1"])*self.scale < 10
+            grabbed_right = abs(mouse_x - region["x2"])*self.scale < 10
+            if in_y and (grabbed_left or grabbed_right):
+                print("grab", grabbed_left, grabbed_right)
+                self.current_region_start = None
+                region_to_move = self.regions[self.textbox_mode][i]
+                del self.regions[self.textbox_mode][i]
+                self.moving_horiz = [grabbed_right, region_to_move]
+                return
+            else:
+                grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
+                grabbed_bottom = abs(mouse_y-region["y2"])*self.scale < 10
+                if grabbed_top or grabbed_bottom:
+                    col = region["layer"]
+                    box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
+                    if x >= box_x and x < box_x + BOX_WIDTH:
+                        grabbed = True
+                        del self.regions[self.textbox_mode][i]
+                        if grabbed_top:
+                            self.current_region_start = region["y2"]
+                        else:
+                            self.current_region_start = region["y1"]
+                        break
         
         if not grabbed:
             self.current_region_start = mouse_y
@@ -778,7 +815,19 @@ class ImageViewer(Gtk.Application):
             y_current = min(max(y_current, self.image_content_start), self.image_content_end)
             self.current_region_temp = (self.current_region_start, y_current)
             self.drawing_area.queue_draw()
-        
+        elif self.moving_horiz is not None:
+            x_current = (x - self.offset_x) / self.scale
+            img_width = self.pixbuf.get_width()
+            x_current = min(max(x_current, 0), img_width)
+            is_right = self.moving_horiz[0]
+            region = self.moving_horiz[1]
+            if is_right:
+                region["x2"] = x_current
+            else:
+                region["x1"] = x_current
+            self.moving_horiz = [is_right, region]
+            self.drawing_area.queue_draw()
+
         hovered = None
         for button in self.region_buttons:
             x0, y0, w, h = button["bbox"]
@@ -790,23 +839,33 @@ class ImageViewer(Gtk.Application):
             self.hovered_region_button = hovered
             self.drawing_area.queue_draw()
         
-        grabbing = False
+        grabbing_vert = False
+        grabbing_horiz = False
 
         img_height = self.pixbuf.get_height()
+        mouse_x = (x - self.offset_x) / self.scale
         mouse_y = (y - self.offset_y) / self.scale
         mouse_y = min(max(mouse_y, self.image_content_start), self.image_content_end)
         image_width = self.pixbuf.get_width()
         regions_with_layers = self.get_regions_with_layers(self.regions[self.textbox_mode])
         for i, region in enumerate(regions_with_layers):
-            grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
-            grabbed_bottom = abs(mouse_y-region["y2"])*self.scale < 10
-            if grabbed_top or grabbed_bottom:
-                col = region["layer"]
-                box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
-                if x >= box_x and x < box_x + BOX_WIDTH:
-                    grabbing = True
+            in_y = mouse_y < region["y2"] and mouse_y > region["y1"]
+            grabbed_left = abs(mouse_x - region["x1"])*self.scale < 10
+            grabbed_right = abs(mouse_x - region["x2"])*self.scale < 10
+            if in_y and (grabbed_left or grabbed_right):
+                grabbing_horiz = True
+            else:
+                grabbed_top = abs(mouse_y-region["y1"])*self.scale < 10
+                grabbed_bottom = abs(mouse_y-region["y2"])*self.scale < 10
+                if grabbed_top or grabbed_bottom:
+                    col = region["layer"]
+                    box_x = image_width * self.scale + self.offset_x + ((col + 1) * (BOX_WIDTH + PADDING))
+                    if x >= box_x and x < box_x + BOX_WIDTH:
+                        grabbing_vert = True
         
-        if grabbing and not hovered:
+        if grabbing_horiz and not hovered:
+            self.window.set_cursor(Gdk.Cursor.new_from_name("col-resize"))
+        elif grabbing_vert and not hovered:
             self.window.set_cursor(Gdk.Cursor.new_from_name("row-resize"))
         else:
             self.window.set_cursor(None)
@@ -820,8 +879,24 @@ class ImageViewer(Gtk.Application):
             y2 = min(max(max(self.current_region_start, mouse_y), self.image_content_start), self.image_content_end)
             if abs(y1-y2) > 5:
                 self.finish_region(mouse_y)
+        elif self.moving_horiz is not None:
+            x_current = (x - self.offset_x) / self.scale
+            img_width = self.pixbuf.get_width()
+            x_current = min(max(x_current, 0), img_width)
+            is_right = self.moving_horiz[0]
+            region = self.moving_horiz[1]
+            if is_right:
+                region["x2"] = x_current
+            else:
+                region["x1"] = x_current
+            self.regions[self.textbox_mode].append(region)
+            self.regions[self.textbox_mode].sort(key=lambda x : x['y1'])
+            self.save_regions()
+            self.moving_horiz = None
+            self.drawing_area.queue_draw()
 
     def finish_region(self, y_end):
+        img_width = self.pixbuf.get_width()
         img_height = self.pixbuf.get_height()
         y1 = min(max(min(self.current_region_start, y_end), self.image_content_start), self.image_content_end)
         y2 = min(max(max(self.current_region_start, y_end), self.image_content_start), self.image_content_end)
@@ -834,7 +909,7 @@ class ImageViewer(Gtk.Application):
     
         feature_type = FeatureType.TEXTBOX if self.textbox_mode else FeatureType.PANEL
 
-        self.regions[self.textbox_mode].append({'y1': y1, 'y2': y2, 'type': feature_type})
+        self.regions[self.textbox_mode].append({'y1': y1, 'y2': y2, 'type': feature_type, 'x1': 0, 'x2': img_width})
         self.regions[self.textbox_mode].sort(key=lambda x : x['y1'])
         self.save_regions()
         self.current_region_start = None
@@ -944,7 +1019,9 @@ class ImageViewer(Gtk.Application):
                     self.regions[True].append({
                         'y1': int(ry * original_width / img_width),
                         'y2': int((ry + rh) * original_width / img_width),
-                        'type': FeatureType.TEXTBOX
+                        'type': FeatureType.TEXTBOX,
+                        'x1': int(rx * original_width / img_width),
+                        'x2': int((rx + rw) * original_width / img_width)
                     })
                 else:
                     print("too large")
@@ -1001,7 +1078,7 @@ class ImageViewer(Gtk.Application):
                     feature_type = region['type']
                 else:
                     feature_type = FeatureType.PANEL
-                regions_arr.append([region['y1'], region['y2'] - region['y1'], feature_type])
+                regions_arr.append([region['y1'], region['y2'] - region['y1'], feature_type, region['x1'], region['x2'] - region['x1']])
 
         with open(json_file, "w") as f:
             json_text = f.write(json.dumps(regions_arr))

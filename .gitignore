@@ -7,3 +7,4 @@ model.onnx
 __pycache__
 model.bak
 model_*
+training_data_processed

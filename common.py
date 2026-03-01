@@ -31,7 +31,7 @@ from albumentations.pytorch import ToTensorV2
 
 from PIL import Image
 
-NUM_CLASSES = 2
+NUM_CLASSES = 4
 
 def get_model():
     model = fasterrcnn_mobilenet_v3_large_fpn(weights=FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT)
@@ -72,7 +72,7 @@ class SlidingWindowImage():
                 regions = json.load(f)
 
         # Convert to [y1, y2]
-        regions = [[top, top + height] for top, height, feature_type in regions]
+        regions = [[region[0], region[0] + region[1], (region[2] if len(region) == 3 else 0)] for region in regions]
 
         # Generate windows
         window_height = round(self.window_height * w / self.target_width)
@@ -82,12 +82,12 @@ class SlidingWindowImage():
             # top = bottom - window_height
             crop_regions = []
 
-            for y1, y2 in regions:
+            for y1, y2, feature_type in regions:
                 # Check if region overlaps with this window
                 if y2 > top and y1 < bottom:
-                    new_y1 = max(y1, top) - top
-                    new_y2 = min(y2, bottom) - top
-                    crop_regions.append([0, new_y1, image.shape[2], new_y2])  # full width
+                    new_y1 = max(min(y1, bottom), top) - top
+                    new_y2 = max(min(y2, bottom), top) - top
+                    crop_regions.append([0, new_y1, image.shape[2], new_y2, feature_type])  # full width
             
             if len(crop_regions) > 0 or not os.path.exists(ann_path):
                 self.samples.append({
@@ -144,8 +144,8 @@ class SlidingWindowImage():
         crop_np = crop.permute(1, 2, 0).numpy()
 
         # Prepare bounding boxes
-        boxes = sample["regions"]  # already in [x1, y1, x2, y2]
-        labels = [1] * len(boxes)  # all regions are class 1
+        boxes = [[x1, y1, x2, y2] for x1, y1, x2, y2, feature_type in sample["regions"]]
+        labels = [feature_type+1 for x1, y1, x2, y2, feature_type in sample["regions"]]
 
         # Apply Albumentations transform
         transform = A.Compose([

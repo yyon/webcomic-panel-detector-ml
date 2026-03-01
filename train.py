@@ -21,6 +21,7 @@ import torch
 from torchvision.io import read_image
 from torchvision.transforms.functional import convert_image_dtype
 from torch.utils.data import Dataset
+from torchvision.utils import save_image
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -31,6 +32,12 @@ parser = argparse.ArgumentParser(prog='train.py')
 parser.add_argument('train_dir')
 args = parser.parse_args()
 train_dir = args.train_dir
+
+CHECK_TRAINING_DATA = False
+
+if CHECK_TRAINING_DATA:
+    if not os.path.exists("training_data_processed"):
+        os.mkdir("training_data_processed")
 
 class SlidingWindowVerticalRegionDataset(Dataset):
     def __init__(self, directory, window_height=1024, stride=512, target_width=256):
@@ -55,6 +62,19 @@ class SlidingWindowVerticalRegionDataset(Dataset):
     def __getitem__(self, idx):
         img_i, sample_i = self.images_samples[idx]
         image = self.images[img_i]
+
+        if CHECK_TRAINING_DATA:
+            name = f"{img_i}_{sample_i}"
+            crop, target = image[sample_i]
+            save_image(crop, f"training_data_processed/{name}.png")
+            with open(f"training_data_processed/{name}.json", "w") as f:
+                regions = []
+                for box_i in range(len(target["boxes"])):
+                    x1, y1, x2, y2 = target["boxes"][box_i]
+                    feature_type = target["labels"][box_i]
+                    regions.append([int(y1), int(y2) - int(y1), int(feature_type)])
+                f.write(json.dumps(regions))
+
         return image[sample_i]
 
 def train(model, dataset, device, num_epochs=10):
@@ -97,38 +117,6 @@ def train(model, dataset, device, num_epochs=10):
 
         print(f"Epoch {epoch + 1}: Loss = {losses.item():.4f}")
         torch.save(model.state_dict(), "model")
-
-def sliding_window_inference(model, image, window_height=1024, stride=512, threshold=0.5):
-    model.eval()
-    device = next(model.parameters()).device
-    _, h, w = image.shape
-
-    all_boxes = []
-    all_scores = []
-
-    for top in range(0, h, stride):
-        bottom = min(top + window_height, h)
-        crop = image[:, top:bottom, :]
-        crop_tensor = crop.unsqueeze(0).to(device)
-
-        with torch.no_grad():
-            outputs = model(crop_tensor)[0]
-
-        # Adjust boxes back to original image coordinates
-        for box, score in zip(outputs['boxes'], outputs['scores']):
-            if score >= threshold:
-                x1, y1, x2, y2 = box.tolist()
-                all_boxes.append([x1, y1 + top, x2, y2 + top])
-                all_scores.append(score)
-
-    if all_boxes:
-        boxes_tensor = torch.tensor(all_boxes, dtype=torch.float32)
-        scores_tensor = torch.tensor(all_scores)
-        keep = nms(boxes_tensor, scores_tensor, iou_threshold=0.5)
-        final_boxes = boxes_tensor[keep].tolist()
-        return final_boxes
-    else:
-        return []
 
 if __name__ == "__main__":
     dataset = SlidingWindowVerticalRegionDataset(train_dir)

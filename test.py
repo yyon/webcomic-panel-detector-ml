@@ -79,13 +79,14 @@ def sliding_window_inference(onnx_session, image_path, threshold=0.5):
         save_image(image_window, test_out_path, boxes.tolist())
 
         # Adjust boxes back to original image coordinates
-        for box, score in zip(boxes, scores):
+        for box, label, score in zip(boxes, labels, scores):
             if score >= threshold:
                 x1, y1, x2, y2 = box.tolist()
                 y1 = y1 * scale + top
                 y2 = y2 * scale + top
                 all_boxes.append({
                     "box": [y1, y2],
+                    "label": label-1,
                     "score": score,
                     "window_i": i,
                     "window": [top, bottom]
@@ -96,7 +97,7 @@ def sliding_window_inference(onnx_session, image_path, threshold=0.5):
     SAME_LOC_THRESHOLD = original_width * (12/256)
     for box_1 in all_boxes:
         for box_2 in all_boxes:
-            if box_1 != box_2 and not (box_1 in to_remove) and not (box_2 in to_remove):
+            if box_1 != box_2 and not (box_1 in to_remove) and not (box_2 in to_remove) and (box_1["label"] == 0) == (box_2["label"] == 0):
                 to_remove_box = None
                 if box_1["box"][0] > box_2["box"][0] and box_1["box"][1] < box_2["box"][1]:
                     to_remove_box = box_1
@@ -127,7 +128,7 @@ def sliding_window_inference(onnx_session, image_path, threshold=0.5):
                 if to_remove_box != None:
                     to_remove.append(to_remove_box)
 
-    return [[box["box"][0], box["box"][1]] for box in all_boxes if not box in to_remove]
+    return [[box["box"][0], box["box"][1], label] for box in all_boxes if not box in to_remove]
 
 def save_full_image(image_path, path, boxes):
     directory = os.path.dirname(path)
@@ -136,7 +137,7 @@ def save_full_image(image_path, path, boxes):
     shutil.copy(image_path, path)
     if boxes != None:
         with open(path.replace(".png", ".json"), "w") as f:
-            f.write(json.dumps([[int(box[0]), int(box[1] - box[0])] for box in boxes]))
+            f.write(json.dumps([[int(box[0]), int(box[1] - box[0]), int(box[2])] for box in boxes]))
 
 if __name__ == "__main__":
     ort_session = ort.InferenceSession("model.onnx")
