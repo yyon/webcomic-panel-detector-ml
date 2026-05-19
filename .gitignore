@@ -2,8 +2,6 @@ venv
 train
 test_full
 test_windows
-model
-model.onnx
 __pycache__
 model.bak
 model_*
