@@ -4,13 +4,14 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "parselongpanels": "node index.js --parselongpanels",
+    "pageify": "node index.js --pageify"
   },
   "author": "",
   "license": "undecided",
   "description": "",
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.84",
-    "onnxruntime-node": "^1.23.2"
+    "@napi-rs/canvas": "^0.1.100",
+    "onnxruntime-node": "^1.26.0"
   }
 }
